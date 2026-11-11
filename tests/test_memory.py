@@ -207,3 +207,50 @@ def test_checkpoint_loads_strictly(path: Path) -> None:
         output = memory(docs, None, question)
     assert output.shape == (1, config.num_memories, config.output_dim)
     assert torch.isfinite(output.float()).all()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("num_memories", 0),
+        ("num_heads", 0),
+        ("embedding_dim", 0),
+        ("output_dim", 0),
+        ("dropout", -0.1),
+        ("dropout", 1.0),
+    ],
+)
+def test_config_rejects_invalid_field(field: str, value: int | float) -> None:
+    """A field outside its valid range raises a ``ValueError`` naming the field and its value."""
+    options = {"embedding_dim": EMBEDDING_DIM, "output_dim": OUTPUT_DIM, field: value}
+    with pytest.raises(ValueError, match=rf"{field} .*{value}"):
+        MemoryConfig(**options)
+
+
+def test_module_rejects_embedding_dim_not_divisible_by_num_heads() -> None:
+    """``embedding_dim`` must split evenly across the attention heads; the error names both fields and values."""
+    with pytest.raises(ValueError, match=r"embedding_dim .*10.* num_heads .*4"):
+        make_memory(embedding_dim=10, num_heads=4)
+
+
+def test_inferred_config_accepts_heads_override(tmp_path: Path) -> None:
+    """A state dict whose width does not split into the default heads still infers a config and loads with overrides.
+
+    The inferred config carries the default ``num_heads=8``, which does not divide ``embedding_dim=12``; the check runs
+    when the module is built, after ``from_pretrained`` applies ``num_heads=4``.
+    """
+    memory = make_memory(embedding_dim=12, num_heads=4)
+    torch.save(memory.state_dict(), tmp_path / CHECKPOINT_FILE)
+    config = MemoryConfig.from_state_dict(memory.state_dict())
+    assert (config.embedding_dim, config.num_heads) == (12, 8)
+    restored = MemoryModule.from_pretrained(tmp_path, num_heads=4, dropout=0.0)
+    assert restored.config == memory.config
+
+
+def test_default_configs_are_valid() -> None:
+    """The defaults at the Qwen3 widths and the small test configuration build without errors."""
+    config = MemoryConfig(embedding_dim=2560, output_dim=4096)
+    assert config.embedding_dim % config.num_heads == 0
+    with torch.device("meta"):
+        assert MemoryModule(2560, 4096).config == config
+    MemoryModule(8, 16, num_memories=2, num_heads=2, dropout=0.0)
