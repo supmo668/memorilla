@@ -126,6 +126,11 @@ class EmbeddingStore:
         """Number of question embeddings, one per row of the split."""
         return int(self._open(QUESTIONS_FILE).get_slice(TENSOR_NAME).get_shape()[0])
 
+    @property
+    def embedding_dim(self) -> int:
+        """Width of the embeddings, read from the question tensor's header (no data is loaded)."""
+        return int(self._open(QUESTIONS_FILE).get_slice(TENSOR_NAME).get_shape()[1])
+
     def __getstate__(self) -> dict[str, Any]:
         """Pickle without open file handles (they are reopened lazily).
 
@@ -529,6 +534,25 @@ def ensure_embeddings(
         if missing():
             raise RuntimeError(f"Embeddings of {config} {missing()} are still incomplete under {root}.")
     return root
+
+
+def check_embedding_width(stores: Iterable[EmbeddingStore], expected: int) -> None:
+    """Check that embedding stores match the width the memory module is built for.
+
+    Args:
+        stores: Embedding stores to check.
+        expected: Embedding width of the memory module (the encoder's hidden size).
+
+    Raises:
+        ValueError: For the first store whose embeddings have another width.
+    """
+    for store in stores:
+        got = store.embedding_dim
+        if got != expected:
+            raise ValueError(
+                f"Embeddings of {store.config}/{store.split} in {store.directory} are {got}-dimensional but the memory "
+                f"module expects {expected}; recompute them with the module's encoder or pass the matching --encoder."
+            )
 
 
 def load_split_with_embeddings(

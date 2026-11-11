@@ -20,6 +20,7 @@ from memorilla.embeddings import (
     EmbeddingStore,
     EmbeddingWriter,
     build_embeddings,
+    check_embedding_width,
     embedding_dir,
     ensure_embeddings,
     load_split_with_embeddings,
@@ -260,3 +261,14 @@ def test_run_isolated(tmp_path: Path) -> None:
     assert (tmp_path / "made").is_dir()
     with pytest.raises(RuntimeError, match="exit code"):
         run_isolated(os.rmdir, str(tmp_path / "absent"))
+
+
+def test_check_embedding_width(data_repo: Path) -> None:
+    """A store whose width differs from the memory module's is reported with both widths."""
+    _, store = load_split_with_embeddings("toy", "train", data_repo)
+    assert store.embedding_dim == EMBEDDING_DIM
+    check_embedding_width([store], EMBEDDING_DIM)
+    with pytest.raises(
+        ValueError, match=rf"toy/train .* are {EMBEDDING_DIM}-dimensional .* expects {EMBEDDING_DIM + 1}"
+    ):
+        check_embedding_width([store], EMBEDDING_DIM + 1)
