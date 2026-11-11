@@ -47,6 +47,22 @@ class MemoryConfig:
     dropout: float = DEFAULT_DROPOUT
     retrieval_init: bool = False
 
+    def __post_init__(self) -> None:
+        """Check each field on its own.
+
+        Whether ``embedding_dim`` splits into ``num_heads`` is checked by ``MemoryModule``, so a config inferred with
+        the default heads can still be built before overrides are applied.
+
+        Raises:
+            ValueError: If a width or count is below 1, or ``dropout`` is outside ``[0, 1)``.
+        """
+        for name in ("num_memories", "num_heads", "embedding_dim", "output_dim"):
+            value = getattr(self, name)
+            if value < 1:
+                raise ValueError(f"{name} must be at least 1, got {value}.")
+        if not 0 <= self.dropout < 1:
+            raise ValueError(f"dropout must be in [0, 1), got {self.dropout}.")
+
     @classmethod
     def from_state_dict(cls, state: dict[str, torch.Tensor]) -> "MemoryConfig":
         """Infer the architecture from a state dict.
@@ -135,6 +151,9 @@ class MemoryModule(nn.Module):
             num_cross_attn_layers: Number of cross-attention + feed-forward refinement blocks.
             dropout: Dropout probability.
             retrieval_init: Initialise the slots from the most question-similar documents instead of learned vectors.
+
+        Raises:
+            ValueError: If a field is out of range or ``embedding_dim`` is not divisible by ``num_heads``.
         """
         super().__init__()
         self.config = MemoryConfig(
@@ -147,6 +166,11 @@ class MemoryModule(nn.Module):
             dropout=dropout,
             retrieval_init=retrieval_init,
         )
+        if embedding_dim % num_heads != 0:
+            raise ValueError(
+                f"embedding_dim {embedding_dim} is not divisible by num_heads {num_heads}; "
+                "pick a num_heads that divides the encoder width."
+            )
 
         if not retrieval_init:
             self.memory_queries = nn.Parameter(torch.randn(1, num_memories, embedding_dim))
