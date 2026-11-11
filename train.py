@@ -304,6 +304,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     Returns:
         The parsed arguments.
+
+    Raises:
+        SystemExit: If the recipe sets an unknown option or a list option to a string, or a required option is missing.
     """
     parser = build_parser()
     known, _ = parser.parse_known_args(argv)
@@ -313,6 +316,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         unknown = sorted(set(recipe) - destinations)
         if unknown:
             parser.error(f"{known.config} sets unknown options: {unknown}")
+        list_options = {action.dest for action in parser._actions if action.nargs in ("+", "*")}
+        for key, value in recipe.items():
+            if key in list_options and isinstance(value, str):
+                parser.error(f"{known.config} sets {key} to a string; write it as a list, e.g. {key}: [{value}]")
         parser.set_defaults(**recipe)
 
     args = parser.parse_args(argv)
