@@ -404,7 +404,8 @@ def build_embeddings(
         max_shard_bytes: Target maximum size of a document shard.
 
     Raises:
-        ValueError: If a collection has no documents (the memory module needs at least one per example).
+        ValueError: If a collection has no documents (the memory module needs at least one per example), or rows
+            sharing a ``collection_id`` hold different numbers of documents.
     """
     ids = np.asarray(dataset.with_format("numpy")[COLLECTION_COLUMN], dtype=np.int64)
     collection_ids, first_rows = np.unique(ids, return_index=True)
@@ -414,6 +415,15 @@ def build_embeddings(
     empty = collection_ids[lengths == 0]
     if empty.size:
         raise ValueError(f"Collections without documents: {empty[:10].tolist()} ({empty.size} in total).")
+    collection_index = np.searchsorted(collection_ids, ids)
+    mismatched = np.flatnonzero(row_lengths != lengths[collection_index])
+    if mismatched.size:
+        row = mismatched[0]
+        raise ValueError(
+            f"Rows sharing collection_id {ids[row]} hold different numbers of documents "
+            f"({lengths[collection_index[row]]} and {row_lengths[row]}); every row of a collection must carry the "
+            "same documents (docs/data.md)."
+        )
 
     with EmbeddingWriter(out_dir, max_shard_bytes=max_shard_bytes) as writer:
         for begin, end in _chunk_collections(lengths, chunk_size):
