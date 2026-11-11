@@ -76,6 +76,27 @@ class PromptSet:
     yarn_factor: float | None
 
 
+def positive_int(value: str) -> int:
+    """Parse a strictly positive integer command-line value.
+
+    Args:
+        value: The raw value.
+
+    Returns:
+        The integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not an integer of at least one.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"{value!r} must be a positive integer.")
+    return number
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments.
 
@@ -85,7 +106,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--benchmark", type=str, required=True, help="Registered benchmark name, or 'all'.")
     parser.add_argument("--method", type=str, choices=METHODS, required=True, help="Baseline to run.")
-    parser.add_argument("--top_k", type=int, default=5, help="Documents retrieved per question with --method rag.")
+    parser.add_argument(
+        "--top_k", type=positive_int, default=5, help="Documents retrieved per question with --method rag."
+    )
     parser.add_argument("--decoder", type=str, default=DEFAULT_DECODER, help="Decoder (Hub id or local path).")
     parser.add_argument(
         "--encoder", type=str, default=DEFAULT_ENCODER, help="Encoder of the stored embeddings and of choice scoring."
@@ -224,7 +247,12 @@ def context_summary(lengths: list[int], max_model_len: int, max_input_tokens: in
 
     Returns:
         Fit rate (percent of prompts kept whole), truncation counts and prompt-length statistics.
+
+    Raises:
+        ValueError: If there are no prompts.
     """
+    if not lengths:
+        raise ValueError("No prompts to summarise: the split has no rows.")
     array = np.asarray(lengths, dtype=np.int64)
     truncated = array > max_input_tokens
     summary = {
