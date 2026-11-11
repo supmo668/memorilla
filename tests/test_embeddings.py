@@ -260,3 +260,16 @@ def test_run_isolated(tmp_path: Path) -> None:
     assert (tmp_path / "made").is_dir()
     with pytest.raises(RuntimeError, match="exit code"):
         run_isolated(os.rmdir, str(tmp_path / "absent"))
+
+
+@pytest.mark.parametrize(("documents", "count"), [(["a", "b", "c", "d"], 4), (None, 0)])
+def test_build_embeddings_rejects_rows_of_one_collection_with_different_documents(
+    tmp_path: Path, fake_encoder: FakeEncoder, documents: list[str] | None, count: int
+) -> None:
+    """Rows sharing a collection_id must carry as many documents; a mismatch is raised before anything is embedded."""
+    rows = make_rows()
+    rows[2]["documents"] = documents
+    dataset = write_split(tmp_path, "toy", "train", rows)
+    with pytest.raises(ValueError, match=rf"collection_id 7 hold different numbers of documents \(2 and {count}\)"):
+        build_embeddings(dataset, embedding_dir("toy", "train", tmp_path), fake_encoder)
+    assert fake_encoder.calls == []
