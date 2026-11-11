@@ -229,6 +229,19 @@ $ pre-commit install                 # run the same checks on every commit
 
 Set `MEMORILLA_TEST_CHECKPOINTS` to a directory of checkpoints to also check that each one loads strictly and runs.
 
+### Running the tests on CPU
+
+The unit tests need no GPU. To run them on a machine without CUDA, install the CPU build of PyTorch and leave out vLLM,
+as CI does (Python 3.11):
+
+```bash
+$ uv pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cpu
+$ echo "vllm; sys_platform == 'never'" > no-vllm.txt
+$ uv pip install -e ".[dev]" --override no-vllm.txt
+$ python -m nltk.downloader -q wordnet
+$ pytest -ra                         # the tests that need vLLM are skipped
+```
+
 ## Citation
 
 ```bibtex
