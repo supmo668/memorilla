@@ -134,3 +134,12 @@ def test_inference_modules_import_without_gpu(module: str) -> None:
     """The vLLM-backed modules import on a CPU-only machine wherever vLLM is installed."""
     pytest.importorskip("vllm")
     importlib.import_module(module)
+
+
+def test_recipe_list_option_given_a_string_is_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A recipe that sets a list option to a bare string is an error rather than a sequence of characters."""
+    recipe = tmp_path / "string.yaml"
+    recipe.write_text(f"datasets: pv4\noutput_dir: {tmp_path / 'run'}\n")
+    with pytest.raises(SystemExit):
+        parse_args(["--config", str(recipe)])
+    assert "sets datasets to a string" in capsys.readouterr().err
