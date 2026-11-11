@@ -30,7 +30,7 @@ from memorilla.data import (
     MemoryDataset,
     ensure_data,
 )
-from memorilla.embeddings import EmbeddingStore, ensure_embeddings, load_split_with_embeddings
+from memorilla.embeddings import EmbeddingStore, check_embedding_width, ensure_embeddings, load_split_with_embeddings
 from memorilla.memory import MemoryModule
 from memorilla.metrics import SCORER_GPU_MEMORY_UTILIZATION, check_scoring_inputs, clean_generation, score_predictions
 from memorilla.paths import DATA_DIR, DATA_REPO, DEFAULT_DECODER, DEFAULT_ENCODER, MODEL_CACHE_DIR, RESULTS_DIR, resolve
@@ -208,7 +208,8 @@ def main(args: argparse.Namespace) -> None:
         args: Parsed command-line arguments.
 
     Raises:
-        ValueError: If the checkpoint's output width does not match the decoder's hidden size.
+        ValueError: If the checkpoint's output width does not match the decoder's hidden size, or a target's embeddings
+            do not match the checkpoint's embedding width.
     """
     seed_everything(args.seed)
     targets = [load_target(benchmark, args) for benchmark in resolve_targets(args)]
@@ -220,6 +221,7 @@ def main(args: argparse.Namespace) -> None:
             f"The checkpoint produces {memory.config.output_dim}-dimensional memory tokens but {args.decoder} has "
             f"hidden size {hidden_size}; pass the decoder the checkpoint was trained with."
         )
+    check_embedding_width((store for _, _, store in targets), memory.config.embedding_dim)
 
     model = MemoryVLLM(
         args.decoder,

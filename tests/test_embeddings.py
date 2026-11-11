@@ -20,6 +20,7 @@ from memorilla.embeddings import (
     EmbeddingStore,
     EmbeddingWriter,
     build_embeddings,
+    check_embedding_width,
     embedding_dir,
     ensure_embeddings,
     load_split_with_embeddings,
@@ -273,3 +274,14 @@ def test_build_embeddings_rejects_rows_of_one_collection_with_different_document
     with pytest.raises(ValueError, match=rf"collection_id 7 hold different numbers of documents \(2 and {count}\)"):
         build_embeddings(dataset, embedding_dir("toy", "train", tmp_path), fake_encoder)
     assert fake_encoder.calls == []
+
+
+def test_check_embedding_width(data_repo: Path) -> None:
+    """A store whose width differs from the memory module's is reported with both widths."""
+    _, store = load_split_with_embeddings("toy", "train", data_repo)
+    assert store.embedding_dim == EMBEDDING_DIM
+    check_embedding_width([store], EMBEDDING_DIM)
+    with pytest.raises(
+        ValueError, match=rf"toy/train .* are {EMBEDDING_DIM}-dimensional .* expects {EMBEDDING_DIM + 1}"
+    ):
+        check_embedding_width([store], EMBEDDING_DIM + 1)
