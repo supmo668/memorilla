@@ -31,7 +31,7 @@ from memorilla.data import (
     ensure_data,
     split_files,
 )
-from memorilla.embeddings import EmbeddingStore, ensure_embeddings, load_split_with_embeddings
+from memorilla.embeddings import EmbeddingStore, check_embedding_width, ensure_embeddings, load_split_with_embeddings
 from memorilla.llm import MemoryLLM
 from memorilla.memory import (
     DEFAULT_DROPOUT,
@@ -365,6 +365,9 @@ def main(args: argparse.Namespace) -> None:
 
     Args:
         args: Parsed command-line arguments.
+
+    Raises:
+        ValueError: If the embeddings do not match the encoder's hidden size (checked before the decoder is loaded).
     """
     pl.seed_everything(args.seed)
     torch.set_float32_matmul_precision("medium")
@@ -372,6 +375,9 @@ def main(args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_set, validation_set, stores = prepare_data(args)
+    check_embedding_width(
+        stores.values(), AutoConfig.from_pretrained(args.encoder, cache_dir=args.cache_dir).hidden_size
+    )
     module = MemoryTrainingModule(args)
     collator = MemoryCollator(
         module.llm.tokenizer,

@@ -4,11 +4,15 @@ import argparse
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 import torch
 
+from memorilla.embeddings import load_split_with_embeddings
 from memorilla.utils import read_recipe
+from tests.helpers import EMBEDDING_DIM, FakeEncoder, make_rows, write_split
+import train
 from train import MIN_LR_RATIO, MemoryTrainingModule, parse_args
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
@@ -143,3 +147,31 @@ def test_recipe_list_option_given_a_string_is_rejected(tmp_path: Path, capsys: p
     with pytest.raises(SystemExit):
         parse_args(["--config", str(recipe)])
     assert "sets datasets to a string" in capsys.readouterr().err
+
+
+def test_training_rejects_embeddings_of_another_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Embeddings narrower or wider than the encoder's hidden size fail before the decoder is loaded."""
+    write_split(tmp_path, "toy", "train", make_rows(), FakeEncoder(dim=EMBEDDING_DIM + 1))
+    _, store = load_split_with_embeddings("toy", "train", tmp_path)
+
+    def build_module(args: argparse.Namespace) -> NoReturn:
+        """Fail the test if reached.
+
+        Args:
+            args: Parsed command-line arguments.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError("the decoder was loaded")
+
+    monkeypatch.setattr(train, "prepare_data", lambda args: (None, None, {("toy", "train"): store}))
+    monkeypatch.setattr(
+        train.AutoConfig, "from_pretrained", lambda *args, **kwargs: SimpleNamespace(hidden_size=EMBEDDING_DIM)
+    )
+    monkeypatch.setattr(train, "MemoryTrainingModule", build_module)
+    args = parse_args(["--config", str(CONFIG_DIR / "single_task.yaml"), "--output_dir", str(tmp_path / "run")])
+    with pytest.raises(
+        ValueError, match=rf"are {EMBEDDING_DIM + 1}-dimensional but the memory module expects {EMBEDDING_DIM}"
+    ):
+        train.main(args)
