@@ -26,7 +26,18 @@ def inject_memory(
 
     Returns:
         A new embedding tensor with the memory tokens scattered in.
+
+    Raises:
+        ValueError: If a row's placeholder count differs from the number of memory tokens per row.
     """
+    num_memories = memory_tokens.size(1)
+    counts = (input_ids == memory_token_id).sum(dim=1)
+    for i, count in enumerate(counts.tolist()):
+        if count != num_memories:
+            raise ValueError(
+                f"Row {i} has {count} <|memory|> placeholders but {num_memories} memory tokens were given."
+            )
+
     hidden_size = inputs_embeds.size(-1)
     flat_embeds = inputs_embeds.reshape(-1, hidden_size)
     flat_memory = memory_tokens.reshape(-1, hidden_size).to(dtype=inputs_embeds.dtype)
