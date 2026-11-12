@@ -1,12 +1,19 @@
-"""Evaluate the text-only baselines: closed-book, retrieval (RAG-k) and full context.
+"""Evaluate the text-only baselines: closed-book, retrieval (RAG-k), full context and precomputed contexts.
 
-Documents go into the user turn as text (most similar first for RAG, stored order for full context), then the question
-and suffix; over-long prompts are truncated from the front. Outputs and scoring match evaluate.py.
+Documents go into the user turn as text (most similar first for RAG, stored order for full context, file order for
+precomputed contexts), then the question and suffix; over-long prompts are truncated from the front. Outputs and
+scoring match evaluate.py.
+
+``--method precomputed --contexts <file.jsonl>`` scores contexts chosen by any external system. Each line of the file
+is one JSON object ``{"benchmark": <registered name>, "row": <0-based index in the evaluated split>, "question":
+<that row's question>, "contexts": [<str>, ...]}``; every row of each evaluated benchmark appears exactly once, and an
+empty ``contexts`` list is closed book for that row.
 """
 
 import argparse
 from collections import defaultdict
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +24,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from memorilla.benchmarks import (
+    BENCHMARKS,
     RETRIEVAL_CONTEXT_LENGTH,
     YARN_ORIGINAL_MAX_POSITION_EMBEDDINGS,
     Benchmark,
@@ -42,7 +50,9 @@ if TYPE_CHECKING:
 CLOSED_BOOK = "closed_book"
 RAG = "rag"
 FULL_CONTEXT = "full_context"
-METHODS = (CLOSED_BOOK, RAG, FULL_CONTEXT)
+PRECOMPUTED = "precomputed"
+METHODS = (CLOSED_BOOK, RAG, FULL_CONTEXT, PRECOMPUTED)
+CONTEXT_KEYS = ("benchmark", "row", "question", "contexts")
 GENERATION_RESERVE = 32
 DOCUMENT_SEPARATOR = "\n\n"
 CONTEXT_FILE = "context.json"
@@ -109,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top_k", type=positive_int, default=5, help="Documents retrieved per question with --method rag."
     )
+    parser.add_argument(
+        "--contexts",
+        type=str,
+        default=None,
+        help="JSONL file of per-row contexts with --method precomputed (see the module docstring for the format).",
+    )
     parser.add_argument("--decoder", type=str, default=DEFAULT_DECODER, help="Decoder (Hub id or local path).")
     parser.add_argument(
         "--encoder", type=str, default=DEFAULT_ENCODER, help="Encoder of the stored embeddings and of choice scoring."
@@ -136,7 +152,12 @@ def parse_args() -> argparse.Namespace:
         help="Results directory (one folder per method and benchmark).",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.method == PRECOMPUTED and args.contexts is None:
+        parser.error(f"--contexts is required with --method {PRECOMPUTED}")
+    if args.method != PRECOMPUTED and args.contexts is not None:
+        parser.error(f"--contexts only applies to --method {PRECOMPUTED}")
+    return args
 
 
 def method_label(method: str, top_k: int) -> str:
@@ -147,7 +168,7 @@ def method_label(method: str, top_k: int) -> str:
         top_k: Retrieval depth.
 
     Returns:
-        ``closed_book``, ``rag_top<k>`` or ``full_context``.
+        ``closed_book``, ``rag_top<k>``, ``full_context`` or ``precomputed``.
     """
     return f"{RAG}_top{top_k}" if method == RAG else method
 
@@ -186,6 +207,70 @@ def retrieve(dataset: Dataset, store: EmbeddingStore, top_k: int) -> list[list[s
         order = similarities.argsort(descending=True)[: min(top_k, len(item[DOCUMENTS_COLUMN]))].tolist()
         retrieved.append([item[DOCUMENTS_COLUMN][index] for index in order])
     return retrieved
+
+
+def load_contexts(path: str | Path, benchmark: Benchmark, dataset: Dataset) -> list[list[str]]:
+    """Read one benchmark's precomputed contexts from a JSONL file and check them against its split.
+
+    Lines of other registered benchmarks are skipped, so one file can serve ``--benchmark all``; blank lines are
+    skipped too. The ``question`` of each line must equal its row's question after stripping both, so a file built
+    against another revision of the split fails here rather than scoring the wrong rows.
+
+    Args:
+        path: The contexts file.
+        benchmark: The benchmark being evaluated.
+        dataset: Its evaluated split.
+
+    Returns:
+        The contexts of every row, in row order, each in the order the file gives them.
+
+    Raises:
+        ValueError: If a line is not a JSON object with the four keys, names an unregistered benchmark, or (for this
+            benchmark) has a row that is not an integer, out of range or already given, a question that does not
+            match, or contexts that are not a list of strings; or if a row of the split has no line. Errors name the
+            file and line.
+    """
+    questions = [str(question).strip() for question in dataset[QUESTION_COLUMN]]
+    contexts: list[list[str] | None] = [None] * len(questions)
+    lines: dict[int, int] = {}
+    with open(path) as handle:
+        for number, text in enumerate(handle, start=1):
+            if not text.strip():
+                continue
+            where = f"{path}:{number}"
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"{where}: not valid JSON ({error.msg}).") from None
+            if not isinstance(record, dict):
+                raise ValueError(f"{where}: expected a JSON object with keys {list(CONTEXT_KEYS)}.")
+            missing = sorted(set(CONTEXT_KEYS) - set(record))
+            if missing:
+                raise ValueError(f"{where}: missing key(s) {missing}.")
+            name = record["benchmark"]
+            if not isinstance(name, str) or name not in BENCHMARKS:
+                raise ValueError(f"{where}: unknown benchmark {name!r}; choose from {sorted(BENCHMARKS)}.")
+            if name != benchmark.name:
+                continue
+            row = record["row"]
+            if not isinstance(row, int) or isinstance(row, bool):
+                raise ValueError(f"{where}: 'row' must be an integer, got {row!r}.")
+            if not 0 <= row < len(questions):
+                raise ValueError(f"{where}: row {row} is out of range: {name!r} has {len(questions)} rows.")
+            if row in lines:
+                raise ValueError(f"{where}: row {row} of benchmark {name!r} already given on line {lines[row]}.")
+            if not isinstance(record["question"], str) or record["question"].strip() != questions[row]:
+                raise ValueError(f"{where}: question does not match row {row} of {name!r}: {questions[row]!r}.")
+            documents = record["contexts"]
+            if not isinstance(documents, list) or not all(isinstance(document, str) for document in documents):
+                raise ValueError(f"{where}: 'contexts' must be a list of strings.")
+            lines[row] = number
+            contexts[row] = documents
+    absent = [row for row, documents in enumerate(contexts) if documents is None]
+    if absent:
+        shown = absent if len(absent) <= 10 else [*absent[:10], "..."]
+        raise ValueError(f"{path}: no line for row(s) {shown} of benchmark {benchmark.name!r} ({len(absent)} missing).")
+    return contexts
 
 
 def user_message(documents: list[str], question: str, suffix: str) -> str:
@@ -281,7 +366,7 @@ def prepare_prompts(benchmark: Benchmark, args: argparse.Namespace, tokenizer: P
         The prompts with their split, fit-rate summary and engine settings.
     """
     root = ensure_data(benchmark.config, [benchmark.split], repo=args.data_repo, data_dir=args.data_dir)
-    columns = EVAL_COLUMNS if args.method == CLOSED_BOOK else [*EVAL_COLUMNS, DOCUMENTS_COLUMN]
+    columns = EVAL_COLUMNS if args.method in (CLOSED_BOOK, PRECOMPUTED) else [*EVAL_COLUMNS, DOCUMENTS_COLUMN]
     if args.method == RAG:
         ensure_embeddings(
             benchmark.config,
@@ -297,6 +382,8 @@ def prepare_prompts(benchmark: Benchmark, args: argparse.Namespace, tokenizer: P
         dataset = load_split(benchmark.config, benchmark.split, root, columns)
         if args.method == FULL_CONTEXT:
             documents = [list(docs) for docs in dataset[DOCUMENTS_COLUMN]]
+        elif args.method == PRECOMPUTED:
+            documents = load_contexts(args.contexts, benchmark, dataset)
         else:
             documents = [[] for _ in range(len(dataset))]
     check_scoring_inputs(benchmark, dataset)
