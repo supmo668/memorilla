@@ -35,7 +35,7 @@ from memorilla.memory import MemoryModule
 from memorilla.metrics import SCORER_GPU_MEMORY_UTILIZATION, check_scoring_inputs, clean_generation, score_predictions
 from memorilla.paths import DATA_DIR, DATA_REPO, DEFAULT_DECODER, DEFAULT_ENCODER, MODEL_CACHE_DIR, RESULTS_DIR, resolve
 from memorilla.utils import DEFAULT_SEED, read_recipe, release_gpu_memory, seed_everything
-from memorilla.vllm import DECODER_GPU_MEMORY_UTILIZATION, MemoryVLLM
+from memorilla.vllm import CACHE_DTYPES, DECODER_GPU_MEMORY_UTILIZATION, MemoryVLLM
 
 CUSTOM_MAX_LENGTH = 2048
 CUSTOM_MAX_NEW_TOKENS = 128
@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, required=True, help="Checkpoint directory or memory.pt.")
     parser.add_argument("--decoder", type=str, default=DEFAULT_DECODER, help="Decoder the checkpoint was trained with.")
     parser.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        help="Allow custom model code from the decoder's repository to run.",
+    )
+    parser.add_argument(
         "--encoder", type=str, default=DEFAULT_ENCODER, help="Encoder of the stored embeddings and of choice scoring."
     )
     prompt = parser.add_mutually_exclusive_group()
@@ -73,6 +78,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_new_tokens", type=int, default=None, help="Override the generation budget.")
 
     parser.add_argument("--batch_size", type=int, default=32, help="Rows per generation call.")
+    parser.add_argument(
+        "--memory_cache", action="store_true", help="Cache the memory module's keys and values per collection."
+    )
+    parser.add_argument("--cache_dtype", choices=sorted(CACHE_DTYPES), default="bfloat16", help="Dtype of the cache.")
+    parser.add_argument("--compile_memory", action="store_true", help="Run the memory module through torch.compile.")
     parser.add_argument(
         "--gpu_memory_utilization",
         type=float,
@@ -215,7 +225,10 @@ def main(args: argparse.Namespace) -> None:
     targets = [load_target(benchmark, args) for benchmark in resolve_targets(args)]
 
     memory = MemoryModule.from_pretrained(resolve(args.checkpoint))
-    hidden_size = AutoConfig.from_pretrained(args.decoder, cache_dir=args.cache_dir).hidden_size
+    decoder_config = AutoConfig.from_pretrained(
+        args.decoder, cache_dir=args.cache_dir, trust_remote_code=args.trust_remote_code
+    )
+    hidden_size = decoder_config.hidden_size
     if memory.config.output_dim != hidden_size:
         raise ValueError(
             f"The checkpoint produces {memory.config.output_dim}-dimensional memory tokens but {args.decoder} has "
@@ -229,6 +242,10 @@ def main(args: argparse.Namespace) -> None:
         max_model_len=max(benchmark.max_length for benchmark, _, _ in targets),
         gpu_memory_utilization=args.gpu_memory_utilization,
         cache_dir=args.cache_dir,
+        memory_cache=args.memory_cache,
+        cache_dtype=args.cache_dtype,
+        compile_memory=args.compile_memory,
+        trust_remote_code=args.trust_remote_code,
     )
     output_dir = resolve(args.output_dir)
     jobs = []
